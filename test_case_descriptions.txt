@@ -1,0 +1,447 @@
+CS 111 Operating Systems
+P4: Jumbo File System
+TEST CASE DESCRIPTIONS
+
+================================================================================
+Note 1: These tests are run by custom code that directly calls your functions.
+(It does not use the provided "command line" code.)
+
+Note 2: Each test that's run on a new, freshly "formatted" disk file, and
+(usually) run in it's own process (separate from the others).
+
+Note 3: If you see a message that a test "terminated due to a received signal",
+then that message applies to the test case _below_ that message.
+
+Note 4: All test cases call jfs_mount() and jfs_unmount(), so those will not be
+explicitly listed under "functions called".  They are implied.
+================================================================================
+
+
+**********************
+*** TEST SET mkdir ***
+
+test_mkdir_1_create_directory
+----------------------------------------
+JFS Functions Called: jfs_mkdir, jfs_ls
+Description:
+Make a directory, then ls to confirm it exists (in the directory array).
+
+test_mkdir_2_long_dirname
+----------------------------------------
+JFS Functions Called: jfs_mkdir, jfs_ls
+Description: Make a directory whose name has the MAX_NAME_LENGTH, then ls to
+confirm it exists (in the directory array).
+
+test_mkdir_3_fill_directory
+----------------------------------------
+JFS Functions Called: jfs_mkdir, jfs_ls
+Description:
+Make MAX_DIR_ENTRIES number of directories, then ls to confirm that they all
+exist (in the directory array).
+
+
+**********************
+*** TEST SET chdir ***
+
+test_chdir_1_simple_cd
+----------------------------------------
+JFS Functions Called: jfs_mkdir, jfs_chdir, jfs_ls
+Description:
+Make a directory, chdir to that directory, then make another directory.  Use ls
+to confirm the second directory exists and the first one doesn't.
+
+test_chdir_2_cd_to_root
+----------------------------------------
+JFS Functions Called: jfs_mkdir, jfs_chdir, jfs_ls
+Description:
+Make a directory, chdir to that directory, make another directory, then chdir
+to root (NULL).  Use ls to confirm that the first directory exists and the
+second done doesn't.
+
+
+**********************
+*** TEST SET rmdir ***
+
+test_rmdir_1_mkdir_then_rmdir
+----------------------------------------
+JFS Functions Called: jfs_mkdir, jfs_rmdir, jfs_ls
+Description:
+Make a directory, use ls to confirm that the directory exists, then rmdir the
+directory, and use ls to confirm that the directory doesn't exist.
+
+test_rmdir_2_rm_subdir
+----------------------------------------
+JFS Functions Called: jfs_mkdir, jfs_chdir, jfs_rmdir, jfs_ls
+Description:
+Make a directory, chdir to it, make another directory, ls to confirm that the
+second directory exists, rmdir the second directory, then ls to confirm that
+neither directory exists.
+
+test_rmdir_3_mkdir_rmdir_mkdir
+----------------------------------------
+JFS Functions Called: jfs_mkdir, jfs_rmdir, jfs_ls
+Description:
+Make four directories, rmdir the first and third directories, then make a fifth
+directory.  Finally, ls to confirm that the second, fourth, and fifth
+directores exist, and that the first and third directories do not.
+
+
+**********************
+*** TEST SET creat ***
+
+test_creat_1_create_file
+----------------------------------------
+JFS Functions Called: jfs_creat, jfs_ls
+Description:
+Create a file, then ls to confirm that the file exists (in the files array).
+
+test_creat_2_long_filename
+----------------------------------------
+JFS Functions Called: jfs_creat, jfs_ls
+Description:
+Create a file whose name is MAX_NAME_LENTH long, then ls to confirm that the
+file exists (in the files array).
+
+test_creat_3_fill_directory
+----------------------------------------
+JFS Functions Called: jfs_creat, jfs_ls
+Description:
+Create MAX_DIR_ENTRIES different files, then ls to confirm that all of the
+files exist.
+
+
+***********************
+*** TEST SET remove ***
+
+test_remove_1_creat_then_remove
+----------------------------------------
+JFS Functions Called: jfs_creat, jfs_remove, jfs_ls
+Description:
+Create a file, ls to confirm that it exists, then remove the file, and ls to
+confirm that it does not exist.
+
+test_remove_2_creat_remove_creat
+----------------------------------------
+JFS Functions Called: jfs_creat, jfs_remove, jfs_ls
+Description:
+Create four new files, ls to confirm the first and third files exist, then
+remove the first and third files.  Create a fifth file, then ls to confirm that
+the second, fourth, and fifth files exists, and that the first and third files
+do not.
+
+
+*****************************
+*** TEST SET write & read ***
+
+test_write_read_1_one_byte
+----------------------------------------
+JFS Functions Called: jfs_creat, jfs_write, jfs_read
+Description:
+Create a one byte write buffer and a one byte read buffer; populate with data.
+(Note: These are not strings, since that would require a two-byte buffer to
+store a character followed by '\0'!  Failure to handle non-strings could cause
+this test case to fail.)  Create a file, write the buffer with size 1, then
+read the buffer.  Confirm that the size returned by read is 1, and confirm that
+the read byte equals the written byte.
+
+test_write_read_2_big_read_buffer
+----------------------------------------
+JFS Functions Called: jfs_creat, jfs_write, jfs_read
+Description:
+Create a write buffer (smaller than one block size) and a read buffer that's
+bigger than the write buffer; populate with data.  Create a file, write the
+write buffer, then read the read buffer (passing in the read buffer size).
+Confirm that the size returned from read is the write buffer size, and the read
+buffer data matches the data in the write buffer (up to the write buffer size
+number of bytes).
+
+test_write_read_3_small_read_buffer
+----------------------------------------
+JFS Functions Called: jfs_creat, jfs_write, jfs_read
+Description:
+Create a write buffer (smaller than one block size) and a read buffer that's
+smaller than the write buffer; populate with data.  Create a file, write the
+write buffer, then read the read buffer (passing in the read buffer size).
+Confirm that the size returned from read is the read buffer size, and the read
+buffer data matche the data in the write buffer (up to the read buffer size
+number of bytes).
+
+test_write_read_4_binary_data
+----------------------------------------
+JFS Functions Called: jfs_creat, jfs_write, jfs_read
+Description:
+Create a write buffer and a read buffer (both the same size and smaller than
+one block size); populate binary data (byte values that do not all correspond
+to valid characters).  Create a file, write the write buffer, then read to the
+read buffer.  Confirm that the size returned by read is the buffer size, and
+confirm that the data in the read buffer matches the data in the write buffer
+(note string comparison functions can't be used for this, since the data is
+binary).
+
+test_write_read_5_multiple_write_one_block
+----------------------------------------
+JFS Functions Called: jfs_creat, jfs_write, jfs_read
+Description:
+Create a write buffer size BLOCK_SIZE / 4 and a read buffer size 3 * BLOCK_SIZE
+/ 4; populate with data.  Create a file, write the write buffer 3 times, then
+read the read buffer.  Confirm that the size returned by read is the read
+buffer size, and the contents of the read buffer matches the contents of the
+write buffer three times in sequence.
+
+test_write_read_6_multiple_write_whole_blocks
+----------------------------------------
+JFS Functions Called: jfs_creat, jfs_write, jfs_read
+Description:
+Create a write buffer with size equal to one block size and a read buffer with
+size equal to N write buffers; populate with data.  Create a file, write the
+write buffer N times, then read the read buffer.  Confirm that the size
+returned by read equals the read buffer size, and that the contents of the read
+buffer matches the contents of the write buffer N times in sequence.
+
+test_write_read_7_multiple_write_partial_blocks
+----------------------------------------
+JFS Functions Called: jfs_creat, jfs_write, jfs_read
+Description:
+Create a write buffer with size less than one block and a read buffer with size
+equal to N write buffers (where N * write buffer size > a couple blocks);
+populate with data.  Create a file, write the write buffer N times, then read
+the read buffer.  Confirm that the size rturned by read equals the read buffer
+size, and that the contents of the read buffer matches the contents of the
+write buffer N times in sequence.
+
+test_write_read_8_max_file_size
+----------------------------------------
+JFS Functions Called: jfs_creat, jfs_write, jfs_read
+Description:
+Create a write buffer and a read buffer, both equal to the MAX_FILE_SIZE;
+populate with data.  Create a file, write the write buffer, then read the read
+buffer.  Confirm that the size returned by read equals the read buffer size,
+and that the contents of the read buffer equals the contents of the write
+buffer.
+
+test_write_read_9_multiple_write_max_file_size
+----------------------------------------
+JFS Functions Called: jfs_creat, jfs_write, jfs_read
+Description:
+Create a write buffer whose size is MAX_FILE_SIZE / N and a read buffer whose
+size is MAX_FILE_SIZE; populate with data.  Create a file, write the write
+buffer N times, then read the read buffer.  Confirm that the size returned by
+read equals the read buffer size, and that the contents of the read buffer
+equals the contents of the write buffer N times in sequence.
+
+
+**********************
+*** TEST SET stat ***
+
+test_stat_1_directories
+----------------------------------------
+JFS Functions Called: jfs_mkdir, jfs_stat
+Description:
+Make a few directories, then stat each one and confirm correct is_dir value and
+the directory block has the expected block number.
+
+test_stat_2_files
+----------------------------------------
+JFS Functions Called: jfs_creat, jfs_stat
+Description:
+Create a few files, then stat each one and confirm correct is_dir value, files
+size and num data blocks are both 0, and inode has the expected block number.
+
+test_stat_3_release_block
+----------------------------------------
+JFS Functions Called: jfs_mkdir, jfs_creat, jfs_rmdir, jfs_remove, jfs_stat
+Description:
+Make a directory, make a file, make a directory, make a file, then rmdir the
+second directory and remove the first file (i.e., the second and third overall
+items created).  Next, make a new directory and then create a new file.
+Finally, stat everything and check is_dir and block_num.  (If rmdir and remove
+do not release blocks properly, the block_num of the last two things created
+may be incorrect.  Although other errors allocating blocks properly could also
+cause this test to fail.)
+
+test_stat_4_writes
+----------------------------------------
+JFS Functions Called: jfs_mkdir, jfs_creat, jfs_write, jfs_stat
+Description:
+Make a directory, create a file, make another directory, write a 1 byte buffer
+to the file, and then make a third directory.  Stat everything, checking is_dir
+and block_num of the directories, as well as is_dir, block_num, file_size, and
+num_data_block (should be 1) of the file.  (If writing is not allocating blocks
+correctly, the block numbers of the directories would be incorrect.  Although
+this test could also fail due to other errors with write, or other errors
+allocating blocks properly.)
+
+
+***********************
+*** TEST SET errors ***
+
+test_error_1_mkdir_exists
+----------------------------------------
+JFS Functions Called: jfs_mkdir, jfs_ls
+Description:
+Make a directory; confirm success.  Make a directory with the same name;
+confirm E_EXISTS.  Then ls to confirm the directory exists.
+
+test_error_2_mkdir_name_too_long
+----------------------------------------
+JFS Functions Called: jfs_mkdir, jfs_ls
+Description:
+Make a directory with a name that's one character too long; confirm
+E_MAX_NAME_LENGTH.  Then ls to confirm the directory does not exist.
+
+test_error_3_mkdir_directory_full
+----------------------------------------
+JFS Functions Called: jfs_mkdir, jfs_ls
+Description:
+Make a number of directories equal to MAX_DIR_ENTRIES; confirm all succeed.
+Create one more directory; confirm E_MAX_DIR_ENTRIES.  Then ls to confirm the
+first batch of directories all exist, but the last one does not.
+
+test_error_4_cd_not_exists_1
+----------------------------------------
+JFS Functions Called: jfs_chdir
+Description:
+Change directory to a directory name that does not exist; confirm E_NOT_EXISTS.
+
+test_error_5_cd_not_exists_2
+----------------------------------------
+JFS Functions Called: jfs_mkdir, jfs_chdir
+Description:
+Make a directory then chdir to that directory name; confirm both succeed.  Then
+chdir to the same directory name again; confirm E_NOT_EXISTS.
+
+test_error_6_cd_to_root_not_exists
+----------------------------------------
+JFS Functions Called: jfs_mkdir, jfs_chdir
+Description:
+Make a directory then cd to it, then make a second directory, and then cd to
+root (chdir NULL); confirm all of these succeed.  Try to cd to the second
+directory name; confirm E_NOT_EXISTS.  Then cd to the first directory name;
+confirm success.
+
+test_error_7_cd_not_dir
+----------------------------------------
+JFS Functions Called: jfs_creat, jfs_chdir, jfs_ls
+Description:
+Creat a file; confirm success.  Try to cd to the file name; confirm E_NOT_DIR.
+Finally, ls to confirm that the file does exist.
+
+test_error_8_rm_not_exists_1
+----------------------------------------
+JFS Functions Called: jfs_rmdir
+Description:
+Remove a directory name that does not exist; confirm E_NOT_EXISTS.
+
+test_error_9_rm_not_exists_2
+----------------------------------------
+JFS Functions Called: jfs_mkdir, jfs_chdir, jfs_rmdir
+Description:
+Make a directory, cd to it, then make a second directory; confirm all these
+succeed.  Try to rmdir the first directory; confirm E_NOT_EXISTS.
+
+test_error_10_rm_not_empty
+----------------------------------------
+JFS Functions Called: jfs_mkdir, jfs_chdir, jfs_rmdir
+Description:
+Make a directory, cd to it, make a second directory, then cd to root (chdir
+NULL); confirm all these succeed.  Try to rmdir the first directory; confirm
+E_NOT_EMPTY.
+
+test_error_11_rm_not_dir
+----------------------------------------
+JFS Functions Called: jfs_creat, jfs_rmdir, jfs_ls
+Description:
+Create a file; confirm success.  Try to rmdir the file name; confirm E_NOT_DIR.
+Use ls to confirm the file still exists.
+
+test_error_12_creat_exists
+----------------------------------------
+JFS Functions Called: jfs_creat, jfs_ls
+Description:
+Create a file; confirm success.  Then try to create a file with the same name
+again; confirm E_EXISTS.  Use ls to confirm that the file does still exist.
+
+test_error_13_creat_name_too_long
+----------------------------------------
+JFS Functions Called: jfs_creat, jfs_ls
+Description:
+Try to create a file with a name one byte longer than MAX_NAME_LENGTH; confirm
+E_MAX_NAME_LENGTH.  Use ls to confirm the file does not exist.
+
+test_error_14_creat_directory_full
+----------------------------------------
+JFS Functions Called: jfs_creat, jfs_ls
+Description:
+Create MAX_DIR_ENTRIES files; confirm all these succeed.  Then create one more
+file; confirm E_MAX_DIR_ENTRIES.  Use ls to confirm that the first batch of
+files all exist, but the last file does not.
+
+test_error_15_remove_not_exists_1
+----------------------------------------
+JFS Functions Called: jfs_remove
+Description:
+Try to remove a file that does not exist; confirm E_NOT_EXISTS.
+
+test_error_16_remove_not_exists_2
+----------------------------------------
+JFS Functions Called: jfs_creat, jfs_remove
+Description:
+Create a file then remove the file; confirm both succeed.  Then try to remove
+the same file again; confirm E_NOT_EXISTS.
+
+test_error_17_remove_is_dir
+----------------------------------------
+JFS Functions Called: jfs_mkdir, jfs_remove, jfs_ls
+Description:
+Make a directory; confirm success.  Then try to remove (as in jfs_remove()) the
+directory; confirm E_IS_DIR.  Use ls to confirm the directory still exists.
+
+test_error_18_stat_not_exists
+----------------------------------------
+JFS Functions Called: jfs_stat
+Description:
+Stat a file that does not exist; confirm E_NOT_EXISTS.
+
+test_error_19_read_not_exists
+----------------------------------------
+JFS Functions Called: jfs_read
+Description:
+Read a file that does not exist; confirm E_NOT_EXISTS.
+
+test_error_20_read_is_dir
+----------------------------------------
+JFS Functions Called: jfs_mkdir, jfs_read, jfs_ls
+Description:
+Make a directory; confirm success.  Read the directory (as in jfs_read());
+confirm E_IS_DIR.  Use ls to confirm the directory exists.
+
+test_error_21_write_not_exists
+----------------------------------------
+JFS Functions Called: jfs_write
+Description:
+Write a file that does not exist; confirm E_NOT_EXISTS.
+
+test_error_22_write_is_dir
+----------------------------------------
+JFS Functions Called: jfs_mkdir, jfs_write, jfs_ls
+Description:
+Make a directory; confirm success.  Write the directory (as in jfs_write());
+confirm E_IS_DIR.  Use ls to confirm the directory exists.
+
+test_error_23_write_max_file_size
+----------------------------------------
+JFS Functions Called: jfs_creat, jfs_write, jfs_ls
+Description:
+Create a file, then write a buffer of MAX_FILE_SIZE to the file; confirm both
+succeed.  Then write a buffer with size 1 to the file; confirm E_MAX_FILE_SIZE.
+Use ls to confirm that the file exists.
+
+test_error_24_disk_full
+----------------------------------------
+JFS Functions Called: jfs_mkdir, jfs_chdir, jfs_creat
+Description:
+Use mkdir and cd to create a directory tree structure with a total number of
+directories in the tree equal to NUM_BLOCKS (minus 1 for the superblock and 1
+for the root directory); confirm all these succeed.  Then try to make one more
+directory; confirm E_DISK_FULL.  Finally, try to create a new file; confirm
+E_DISK_FULL.

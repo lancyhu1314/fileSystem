@@ -1,0 +1,807 @@
+#include "jumbo_file_system.h"
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+
+// C does not have a bool type, so I created one that you can use
+typedef char bool_t;
+#define TRUE 1
+#define FALSE 0
+#define MIN(a, b) (((a) < (b)) ? (a) : (b))
+
+static block_num_t current_dir;
+
+// optional helper function you can implement to tell you if a block is a dir node or an inode
+static bool_t is_dir(block_num_t block_num) {
+    struct block current_block;
+
+    // Read the block from disk
+    if (read_block(block_num, &current_block) < 0) {
+        return FALSE;
+    }
+
+    // Check if the block represents a directory node
+    if (current_block.is_dir == 0) {
+        return TRUE;
+    } else {
+        return FALSE;
+    }
+}
+
+
+/* jfs_mount
+ *   prepares the DISK file on the _real_ file system to have file system
+ *   blocks read and written to it.  The application _must_ call this function
+ *   exactly once before calling any other jfs_* functions.  If your code
+ *   requires any additional one-time initialization before any other jfs_*
+ *   functions are called, you can add it here.
+ * filename - the name of the DISK file on the _real_ file system
+ * returns 0 on success or -1 on error; errors should only occur due to
+ *   errors in the underlying disk syscalls.
+ */
+int jfs_mount(const char* filename) {
+    int ret = bfs_mount(filename);
+    if (ret < 0) {
+        printf("Error: Unable to mount the basic file system.\n");
+        return -1;
+    }
+
+    current_dir = 1;
+    return ret;
+}
+
+
+/* jfs_mkdir
+ *   creates a new subdirectory in the current directory
+ * directory_name - name of the new subdirectory
+ * returns 0 on success or one of the following error codes on failure:
+ *   E_EXISTS, E_MAX_NAME_LENGTH, E_MAX_DIR_ENTRIES, E_DISK_FULL
+ */
+int jfs_mkdir(const char* directory_name) {
+    int num_entries = 0;
+    struct block current_block;
+
+    block_num_t current_block_num = current_dir;
+    //printf("current_block_num: %d\n", current_block_num);
+
+
+    // Read current directory's block
+    if (read_block(current_block_num, &current_block) < 0) {
+        return E_UNKNOWN;
+    }
+
+    // Check if directory_name already exists
+    for (int i = 0; i < current_block.contents.dirnode.num_entries; i++) {
+        char* name = current_block.contents.dirnode.entries[i].name;
+        if (strcmp(name, directory_name) == 0) {
+            return E_EXISTS;
+        }
+        num_entries++;
+    }
+
+    // Check if directory_name exceeds the maximum name length
+    if (strlen(directory_name) > MAX_NAME_LENGTH) {
+        return E_MAX_NAME_LENGTH;
+    }
+
+    // Check if the current directory has reached the maximum number of entries
+    if (num_entries >= MAX_DIR_ENTRIES) {
+        return E_MAX_DIR_ENTRIES;
+    }
+
+    // Allocate a new block for the new directory
+    block_num_t new_dir_block_num = allocate_block();
+    if (new_dir_block_num == 0) {
+        return E_DISK_FULL;
+    }
+
+    // Initialize the new directory block
+    struct block new_dir_block;
+    memset(&new_dir_block, 0, sizeof(struct block));
+    new_dir_block.is_dir = 0;
+    new_dir_block.contents.dirnode.num_entries = 0;
+
+    // Write the new directory block to disk
+    if (write_block(new_dir_block_num, &new_dir_block) < 0) {
+        return E_UNKNOWN;
+    }
+
+    // Add the new directory entry to the current directory
+    strcpy(current_block.contents.dirnode.entries[num_entries].name, directory_name);
+    current_block.contents.dirnode.entries[num_entries].block_num = new_dir_block_num;
+    current_block.contents.dirnode.num_entries++;
+
+    // Write the updated current directory block back to disk
+    if (write_block(current_block_num, &current_block) < 0) {
+        return E_UNKNOWN;
+    }
+
+    return E_SUCCESS; 
+}
+
+
+/* jfs_chdir
+ *   changes the current directory to the specified subdirectory, or changes
+ *   the current directory to the root directory if the directory_name is NULL
+ * directory_name - name of the subdirectory to make the current
+ *   directory; if directory_name is NULL then the current directory
+ *   should be made the root directory instead
+ * returns 0 on success or one of the following error codes on failure:
+ *   E_NOT_EXISTS, E_NOT_DIR
+ */
+int jfs_chdir(const char* directory_name) {
+    struct block current_block;
+    block_num_t current_block_num = current_dir;
+
+    // Change current directory to root directory
+    if (directory_name == NULL) {
+        current_dir = 1;
+        return E_SUCCESS;
+    }
+
+    // Read current directory's block
+    if (read_block(current_block_num, &current_block) < 0) {
+        return E_UNKNOWN;
+    }
+
+    // Search for the specified subdirectory
+    for (int i = 0; i < current_block.contents.dirnode.num_entries; i++) {
+        block_num_t block_num = current_block.contents.dirnode.entries[i].block_num;
+        char* name = current_block.contents.dirnode.entries[i].name;
+        if (strcmp(name, directory_name) == 0) {
+            // Check if entry is a directory
+            if (!is_dir(block_num)) {
+                return E_NOT_DIR;
+            }
+            // Change current directory to the specified subdirectory
+            current_dir = block_num;
+            return E_SUCCESS;
+        }
+    }
+
+    return E_NOT_EXISTS; 
+}
+
+
+/* jfs_ls
+ *   finds the names of all the files and directories in the current directory
+ *   and writes the directory names to the directories argument and the file
+ *   names to the files argument
+ * directories - array of strings; the function will set the strings in the
+ *   array, followed by a NULL pointer after the last valid string; the strings
+ *   should be malloced and the caller will free them
+ * file - array of strings; the function will set the strings in the
+ *   array, followed by a NULL pointer after the last valid string; the strings
+ *   should be malloced and the caller will free them
+ * returns 0 on success or one of the following error codes on failure:
+ *   (this function should always succeed)
+ */
+int jfs_ls(char* directories[MAX_DIR_ENTRIES+1], char* files[MAX_DIR_ENTRIES+1]) {
+    struct block current_block;
+    block_num_t current_block_num = current_dir;
+
+    // Read current directory's block
+    if (read_block(current_block_num, &current_block) < 0) {
+        return E_UNKNOWN;
+    }
+
+    int dir_count = 0;
+    int file_count = 0;
+
+    // Iterate through directory entries
+    for (int i = 0; i < current_block.contents.dirnode.num_entries; i++) {
+        block_num_t block_num = current_block.contents.dirnode.entries[i].block_num;
+        char* name = current_block.contents.dirnode.entries[i].name;
+        if (is_dir(block_num)) {
+            // Directory
+            directories[dir_count] = (char*)malloc((strlen(name) + 1) * sizeof(char));
+            strcpy(directories[dir_count], name);
+            dir_count++;
+        } else {
+            // File
+            files[file_count] = (char*)malloc((strlen(name) + 1) * sizeof(char));
+            strcpy(files[file_count], name);
+            file_count++;
+        }
+    }
+
+    // Terminate the arrays with NULL pointers
+    directories[dir_count] = NULL;
+    files[file_count] = NULL;
+
+    return E_SUCCESS;
+}
+
+
+/* jfs_rmdir
+ *   removes the specified subdirectory of the current directory
+ * directory_name - name of the subdirectory to remove
+ * returns 0 on success or one of the following error codes on failure:
+ *   E_NOT_EXISTS, E_NOT_DIR, E_NOT_EMPTY
+ */
+int jfs_rmdir(const char* directory_name) {
+    struct block current_block;
+    block_num_t current_block_num = current_dir;
+
+    // Read current directory's block
+    if (read_block(current_block_num, &current_block) < 0) {
+        return E_UNKNOWN;
+    }
+
+    // Search for the specified subdirectory
+    for (int i = 0; i < current_block.contents.dirnode.num_entries; i++) {
+        block_num_t block_num = current_block.contents.dirnode.entries[i].block_num;
+        char* name = current_block.contents.dirnode.entries[i].name;
+        if (strcmp(name, directory_name) == 0) {
+            // Check if entry is a directory
+            if (!is_dir(block_num)) {
+                return E_NOT_DIR;
+            }
+            // Check if directory is empty
+            struct block dir_block;
+            if (read_block(block_num, &dir_block) < 0) {
+                return E_UNKNOWN;
+            }
+            // Directory is not empty
+            if (dir_block.contents.dirnode.num_entries > 0) {
+                return E_NOT_EMPTY;
+            }
+            // Release directory block and remove directory entry
+            if (release_block(block_num) < 0) {
+                return E_UNKNOWN;
+            }
+            // Remove and reset directory entry
+            for (int j = i; j < current_block.contents.dirnode.num_entries - 1; j++) {
+                current_block.contents.dirnode.entries[j] = current_block.contents.dirnode.entries[j + 1];
+            }
+            current_block.contents.dirnode.num_entries--;
+            // update current directory's block
+            if (write_block(current_block_num, &current_block) < 0) {
+                return E_UNKNOWN;
+            }
+            return E_SUCCESS;
+        }
+    }
+
+    return E_NOT_EXISTS;
+}
+
+
+/* jfs_creat
+ *   creates a new, empty file with the specified name
+ * file_name - name to give the new file
+ * returns 0 on success or one of the following error codes on failure:
+ *   E_EXISTS, E_MAX_NAME_LENGTH, E_MAX_DIR_ENTRIES, E_DISK_FULL
+ */
+int jfs_creat(const char* file_name) {
+    // Check file name length
+    if (strlen(file_name) > MAX_NAME_LENGTH) {
+        return E_MAX_NAME_LENGTH;
+    }
+
+    struct block current_block;
+    block_num_t current_block_num = current_dir;
+
+    // Read current directory's block
+    if (read_block(current_block_num, &current_block) < 0) {
+        return E_UNKNOWN;
+    }
+
+    // Check if file already exists in the current directory
+    for (int i = 0; i < current_block.contents.dirnode.num_entries; i++) {
+        char* name = current_block.contents.dirnode.entries[i].name;
+        if (strcmp(name, file_name) == 0) {
+            return E_EXISTS;
+        }
+    }
+
+    // Check maximum number of directory entries
+    if (current_block.contents.dirnode.num_entries >= MAX_DIR_ENTRIES) {
+        return E_MAX_DIR_ENTRIES;
+    }
+
+    // Allocate a new block for the file's inode
+    block_num_t inode_block_num = allocate_block();
+    if (inode_block_num == 0) {
+        return E_DISK_FULL;
+    }
+
+    // Initialize the new inode block
+    struct block inode_block;
+    inode_block.is_dir = 1;
+    inode_block.contents.inode.file_size = 0;
+    memset(inode_block.contents.inode.data_blocks, 0, sizeof(inode_block.contents.inode.data_blocks));
+
+    // Write the initialized inode block to disk
+    if (write_block(inode_block_num, &inode_block) < 0) {
+        // Release allocated block 
+        release_block(inode_block_num);
+        return E_UNKNOWN;
+    }
+
+    // Add new file entry to the current directory
+    current_block.contents.dirnode.entries[current_block.contents.dirnode.num_entries].block_num = inode_block_num;
+    strcpy(current_block.contents.dirnode.entries[current_block.contents.dirnode.num_entries].name, file_name);
+    current_block.contents.dirnode.num_entries++;
+
+    // Updated current directory's block to disk
+    if (write_block(current_block_num, &current_block) < 0) {
+        // Release allocated block
+        release_block(inode_block_num);
+        return E_UNKNOWN;
+    }
+
+    return E_SUCCESS;
+}
+
+
+/* jfs_remove
+ *   deletes the specified file and all its data (note that this cannot delete
+ *   directories; use rmdir instead to remove directories)
+ * file_name - name of the file to remove
+ * returns 0 on success or one of the following error codes on failure:
+ *   E_NOT_EXISTS, E_IS_DIR
+ */
+int jfs_remove(const char* file_name) {
+    struct block current_block;
+    block_num_t current_block_num = current_dir;
+
+    // Read current directory's block
+    if (read_block(current_block_num, &current_block) < 0) {
+        return E_UNKNOWN;
+    }
+
+    // Search for the file in the current directory
+    int file_index = -1;
+    for (int i = 0; i < current_block.contents.dirnode.num_entries; i++) {
+        char* name = current_block.contents.dirnode.entries[i].name;
+        if (strcmp(name, file_name) == 0) {
+            file_index = i;
+            break;
+        }
+    }
+
+    // File not found in the current directory
+    if (file_index == -1) {
+        return E_NOT_EXISTS;
+    }
+
+    // Get the block number of the inode for the file
+    block_num_t inode_block_num = current_block.contents.dirnode.entries[file_index].block_num;
+
+    // Read the inode block of the file
+    struct block inode_block;
+    if (read_block(inode_block_num, &inode_block) < 0) {
+        return E_UNKNOWN;
+    }
+
+    // File is a directory, not a file 
+    if (inode_block.is_dir == 0) {
+        return E_IS_DIR;
+    }
+
+    // Release all data blocks allocated to the file
+    for (int i = 0; i < MAX_DATA_BLOCKS && inode_block.contents.inode.data_blocks[i] != 0; i++) {
+        if (release_block(inode_block.contents.inode.data_blocks[i]) < 0) {
+            return E_UNKNOWN;
+        }
+    }
+
+    // Release the inode block of the file
+    if (release_block(inode_block_num) < 0) {
+        return E_UNKNOWN;
+    }
+
+    // Remove the file entry from the current directory
+    for (int i = file_index; i < current_block.contents.dirnode.num_entries - 1; i++) {
+        current_block.contents.dirnode.entries[i] = current_block.contents.dirnode.entries[i + 1];
+    }
+    current_block.contents.dirnode.num_entries--;
+
+    // Updated current directory's block to disk
+    if (write_block(current_block_num, &current_block) < 0) {
+        return E_UNKNOWN;
+    }
+
+    return E_SUCCESS;
+}
+
+
+/* jfs_stat
+ *   returns the file or directory stats (see struct stat for details)
+ * name - name of the file or directory to inspect
+ * buf  - pointer to a struct stat (already allocated by the caller) where the
+ *   stats will be written
+ * returns 0 on success or one of the following error codes on failure:
+ *   E_NOT_EXISTS
+ */
+int jfs_stat(const char* name, struct stats* buf) {
+    struct block current_block;
+    block_num_t current_block_num = current_dir;
+
+    // Read current directory's block
+    if (read_block(current_block_num, &current_block) < 0) {
+        return E_UNKNOWN;
+    }
+
+    // Search for the file or directory in the current directory
+    int file_index = -1;
+    for (int i = 0; i < current_block.contents.dirnode.num_entries; i++) {
+        char* entry_name = current_block.contents.dirnode.entries[i].name;
+        if (strcmp(entry_name, name) == 0) {
+            file_index = i;
+            break;
+        }
+    }
+
+    // File or directory not found
+    if (file_index == -1) {
+        return E_NOT_EXISTS;
+    }
+
+    // Get the block number of the entry (directory block or inode)
+    block_num_t entry_block_num = current_block.contents.dirnode.entries[file_index].block_num;
+
+    // Fill in stats struct
+    buf->block_num = entry_block_num;
+    strcpy(buf->name, name);
+
+    // Read the entry block to determine if it's a directory or a regular file
+    struct block entry_block;
+    if (read_block(entry_block_num, &entry_block) < 0) {
+        return E_UNKNOWN; // Error reading entry block
+    }
+
+    // Directory or file
+    if (entry_block.is_dir == 0) {
+        // Directory
+        buf->is_dir = 0;
+        buf->num_data_blocks = 0;
+        buf->file_size = 0;
+    } else {
+        // File
+        buf->is_dir = 1;
+        buf->num_data_blocks = entry_block.contents.inode.file_size > 0 ? (entry_block.contents.inode.file_size - 1) / BLOCK_SIZE + 1 : 0;
+        buf->file_size = entry_block.contents.inode.file_size;
+    }
+
+    return E_SUCCESS;
+}
+
+
+int jfs_write(const char* file_name, const void* buf, unsigned short orig_count) {
+    unsigned short count = orig_count;
+    //printf("===================================================write:%s\n",buf);
+    //printf("===================================================write size:%d\n",count);
+
+    struct block current_block;
+    block_num_t current_block_num = current_dir;
+
+    // Read current directory's block
+    if (read_block(current_block_num, &current_block) < 0) {
+        return E_UNKNOWN;
+    }
+
+    // Search for the file in the current directory
+    int file_index = -1;
+    for (int i = 0; i < current_block.contents.dirnode.num_entries; i++) {
+        char* name = current_block.contents.dirnode.entries[i].name;
+        if (strcmp(name, file_name) == 0) {
+            file_index = i;
+            break;
+        }
+    }
+
+    // File not found
+    if (file_index == -1) {
+        return E_NOT_EXISTS;
+    }
+
+    // Get the block number of the inode for the file
+    block_num_t inode_block_num = current_block.contents.dirnode.entries[file_index].block_num;
+
+    // Read the inode block of the file
+    struct block inode_block;
+    if (read_block(inode_block_num, &inode_block) < 0) {
+        return E_UNKNOWN; // Error reading inode block
+    }
+
+    // Check if the file is a directory
+    if (inode_block.is_dir == 0) {
+        return E_IS_DIR; // File is a directory, not a regular file
+    }
+
+    // Check if the file size after writing would exceed maximum file size
+    if (inode_block.contents.inode.file_size + count > MAX_FILE_SIZE) {
+        return E_MAX_FILE_SIZE;
+    }
+
+    // Calculate the start position in the last block for appending data
+    unsigned short append_position = inode_block.contents.inode.file_size % BLOCK_SIZE;
+
+
+
+    //uint8_t append_buffer[MAX_FILE_SIZE];
+    
+    uint8_t *append_buffer = (uint8_t *)malloc(MAX_FILE_SIZE * sizeof(uint8_t));
+    if (append_buffer == NULL) {
+        return E_UNKNOWN;
+    }
+    memset(append_buffer, 0, MAX_FILE_SIZE);
+
+    //printf("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxposition: %d\n",append_position);
+    //printf("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxnext start: %d\n",next_start_position);
+    //printf("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxfile size: %d\n",inode_block.contents.inode.file_size);
+    if (append_position > 0 && inode_block.contents.inode.file_size > 0) {
+        if(append_position == 0)
+            append_position = BLOCK_SIZE;
+
+        if (read_block(inode_block.contents.inode.data_blocks[(inode_block.contents.inode.file_size - 1) / BLOCK_SIZE], append_buffer) < 0) {
+            // Error reading last data block
+            return E_UNKNOWN;
+        }
+
+        //printf("xxxxxxxxxxxxxxxxxxxxxxxxlastBuf: %s\n",append_buffer);
+        //printf("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxbuf: %s\n",(char*)buf);
+        //printf("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxcount: %d\n",count);
+
+        memcpy( append_buffer + append_position, buf, count);
+
+        release_block(inode_block.contents.inode.data_blocks[(inode_block.contents.inode.file_size - 1) / BLOCK_SIZE]);
+        //buf = append_buffer;
+    } 
+    else{
+        memcpy( append_buffer, buf, count);
+
+    }
+
+    count += append_position;
+
+
+    // Calculate the number of blocks needed to write the data
+    unsigned short blocks_needed = (count + BLOCK_SIZE - 1) / BLOCK_SIZE;   
+
+    // Calculate the number of blocks already used
+    unsigned short next_start_position = (inode_block.contents.inode.file_size + BLOCK_SIZE - 1) / BLOCK_SIZE - 1;
+    if( inode_block.contents.inode.file_size == 0)
+        next_start_position = 0;
+    else if (append_position == 0)
+        next_start_position = inode_block.contents.inode.file_size / BLOCK_SIZE;
+
+// Allocate data blocks for the file
+    //printf("1************************************************************************************$buf: %s\n",append_buffer);
+block_num_t data_block_nums[blocks_needed];
+for (int i = next_start_position ; i < next_start_position + blocks_needed ; i++) {
+    //printf("2************************************************************************************$buf: %s\n",append_buffer);
+    data_block_nums[i] = allocate_block();
+    //printf("3************************************************************************************$buf: %s\n",append_buffer);
+
+    if (data_block_nums[i] == 0) {
+        for (int j = 0; j < i - next_start_position; j++) {
+            release_block(data_block_nums[j]);
+        }
+        return E_DISK_FULL;
+    }
+    //printf("#####################allocate blockNum:%d\n",data_block_nums[i]);
+}
+
+    // Write data to the allocated data blocks
+    unsigned short bytes_written = 0;
+
+    uint8_t *temp_buf = (uint8_t *)malloc(BLOCK_SIZE * sizeof(uint8_t));
+    if (temp_buf == NULL) {
+        return E_UNKNOWN;
+    }
+    
+    memset(temp_buf, 0, BLOCK_SIZE); // Initialize temp_buf to zero
+
+for (int i = next_start_position ; i < next_start_position + blocks_needed ; i++) {
+    unsigned short bytes_to_write = MIN(count - bytes_written, BLOCK_SIZE);
+    // Create a temporary buffer to hold the data to be written
+    memcpy(temp_buf, append_buffer + bytes_written, bytes_to_write);
+
+
+    //printf("$$$$$$$$$$$$$$$$$$$$$$write i:%d\n",i);
+    //printf("$$$$$$$$$$$$$$$$$$$$$$write blockNum:%d\n",data_block_nums[i]);
+
+    //printf("$$$$$$$$$$$$$$$$$$$$$write bytes:%d\n",bytes_written );
+    //printf("$$$$$$$$$$$$$$$$$$$$$write append buf:%s\n",append_buffer );
+    //printf("$$$$$$$$$$$$$$$$$$$$$write tmp buf:%s\n",temp_buf );
+
+
+    // Write the data from the temporary buffer to the block
+    if (write_block(data_block_nums[i], temp_buf) < 0) {
+        for (int j = 0; j < blocks_needed; j++) {
+            release_block(data_block_nums[j]);
+        }
+        
+        free(temp_buf);
+        return E_UNKNOWN;
+    }
+    //printf("$$$$$$$$$$$$$$write finish tmp_buf:%s\n",temp_buf);
+
+    /*
+    if (write_block(data_block_nums[i], append_buffer + bytes_written) < 0) {
+        for (int j = 0; j < blocks_needed; j++) {
+            release_block(data_block_nums[j]);
+        }
+        return E_UNKNOWN;
+    }
+    */
+    //printf("out2 $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n");
+
+    //uint8_t read_buf[BLOCK_SIZE];
+    uint8_t *read_buf = (uint8_t *)malloc(BLOCK_SIZE * sizeof(uint8_t));
+    if (read_buf == NULL) {
+        return E_UNKNOWN;
+    }
+    memset(read_buf, 0, BLOCK_SIZE);
+
+    if (read_block(data_block_nums[i], read_buf) < 0) {
+        return E_UNKNOWN;
+    }
+    free(read_buf);
+    //printf("***********read buf:%s\n",read_buf);
+
+
+    bytes_written += bytes_to_write;
+}
+
+
+    free(temp_buf);
+    free(append_buffer);
+
+    // Update inode block with new data block numbers and file size
+    for (int i = next_start_position ; i < next_start_position + blocks_needed ; i++) {
+        inode_block.contents.inode.data_blocks[i] = data_block_nums[i];
+    }
+    inode_block.contents.inode.file_size += (count-append_position);
+    
+    // Write the updated inode block to disk
+    if (write_block(inode_block_num, &inode_block) < 0) {
+        // Error writing inode block, release allocated blocks
+        for (int i = 0; i < blocks_needed; i++) {
+            release_block(data_block_nums[i]);
+        }
+        return E_UNKNOWN;
+    }
+
+
+
+    return E_SUCCESS;
+}
+
+/* jfs_read
+ *   reads the specified file and copies its contents into the buffer, up to a
+ *   maximum of *ptr_count bytes copied (but obviously no more than the file
+ *   size, either)
+ * file_name - name of the file to read
+ * buf - buffer where the file data should be written
+
+ *   contains the size of buf when it's passed in, and will be modified to
+ *   contain the number of bytes actually written to buf (e.g., if the file is
+ *   smaller than the buffer) if this function is successful
+ * returns 0 on success or one of the following error codes on failure:
+ *   E_NOT_EXISTS, E_IS_DIR
+ */
+
+int jfs_read(const char* file_name, void* buf, unsigned short* ptr_count) {
+    //printf("------------------------------------------------------read:%d\n",*ptr_count);
+    struct block current_block;
+    block_num_t current_block_num = current_dir;
+
+    // Read current directory's block
+    if (read_block(current_block_num, &current_block) < 0) {
+        return E_UNKNOWN;
+    }
+
+    // Search for the file in the current directory
+    int file_index = -1;
+    for (int i = 0; i < current_block.contents.dirnode.num_entries; i++){ 
+        char* name = current_block.contents.dirnode.entries[i].name;
+        if (strcmp(name, file_name) == 0) {
+            file_index = i;
+            break;
+        }
+    }
+
+    // If file not found in the current directory
+    if (file_index == -1) {
+        return E_NOT_EXISTS;
+    }
+
+    // Get the block number of the inode for the file
+    block_num_t inode_block_num = current_block.contents.dirnode.entries[file_index].block_num;
+
+    // Read the inode block of the file
+    struct block inode_block;
+    if (read_block(inode_block_num, &inode_block) < 0) {
+        return E_UNKNOWN;
+    }
+
+    // Check if the file is a directory
+    if (inode_block.is_dir == 0) {
+        return E_IS_DIR;
+    }
+
+    unsigned short next_start_position = (inode_block.contents.inode.file_size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+
+    // Calculate the number of bytes to read
+    unsigned short bytes_to_read = MIN(inode_block.contents.inode.file_size, *ptr_count);
+    // Read file data from data blocks
+    unsigned short bytes_have_read = 0;
+
+    for (int i = 0; i < next_start_position ; i++) {
+        // Calculate the number of bytes to read from this block
+        unsigned short bytes_this_block = MIN(bytes_to_read - bytes_have_read, BLOCK_SIZE);
+
+        /*
+        printf("===================read i:%d\n",i);
+        printf("===================read hvae_read:%d\n",bytes_have_read);
+        printf("===================read to_read:%d\n",bytes_to_read);
+        printf("===================read blockNum:%d\n",inode_block.contents.inode.data_blocks[i]);
+        printf("===================read this block:%d\n",bytes_this_block);
+        printf("===================size of buf:%d\n",sizeof(buf));
+        // Read data block
+        if (read_block(inode_block.contents.inode.data_blocks[i], buf + bytes_have_read) < 0) {
+            return E_UNKNOWN;
+        }
+        */
+
+        //uint8_t current_block_buf[BLOCK_SIZE];
+        uint8_t *current_block_buf = (uint8_t *)malloc(BLOCK_SIZE * sizeof(uint8_t));
+        if (current_block_buf == NULL) {
+            return E_UNKNOWN;
+        }
+
+
+        if (read_block(inode_block.contents.inode.data_blocks[i], current_block_buf) < 0) {
+            return E_UNKNOWN;
+        }
+
+        /*
+        printf("===================read i:%d\n",i);
+        printf("===================read hvae_read:%d\n",bytes_have_read);
+        printf("===================read to_read:%d\n",bytes_to_read);
+        printf("===================read blockNum:%d\n",inode_block.contents.inode.data_blocks[i]);
+        printf("===================read current_block_use:%d\n",bytes_this_block);
+        printf("===================read buf:%s\n",(char*)current_block_buf);
+        */
+
+        // Copy data from the temporary buffer to the output buffer
+        //memcpy(buf + bytes_have_read, current_block_buf, bytes_this_block);
+
+        memcpy((uint8_t*)buf + bytes_have_read, current_block_buf, bytes_this_block);
+
+
+        bytes_have_read += bytes_this_block;
+        
+        free(current_block_buf);
+
+        if( bytes_have_read >= bytes_to_read)
+            break;
+    }
+
+    // Update ptr_count to indicate the number of bytes actually read
+    *ptr_count = bytes_have_read;
+    //printf("------------------------------------------------------read size:%d\n",*ptr_count);
+    //printf("------------------------------------------------------read buf:%s\n",buf);
+
+
+    return E_SUCCESS;
+}
+
+/* jfs_unmount
+ *   makes the file system no longer accessible (unless it is mounted again).
+ *   This should be called exactly once after all other jfs_* operations are
+ *   complete; it is invalid to call any other jfs_* function (except
+ *   jfs_mount) after this function complete.  Basically, this closes the DISK
+ *   file on the _real_ file system.  If your code requires any clean up after
+ *   all other jfs_* functions are done, you may add it here.
+ * returns 0 on success or -1 on error; errors should only occur due to
+ *   errors in the underlying disk syscalls.
+ */
+int jfs_unmount() {
+    int ret = bfs_unmount();
+    return ret;
+}

@@ -1,0 +1,8 @@
+rm file
+touch file
+ls
+stat file
+
+append file xxx
+
+exit

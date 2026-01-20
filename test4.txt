@@ -1,0 +1,23 @@
+touch file1
+ls
+rm file1
+ls
+
+ls
+touch abcdefgh
+
+touch file1
+touch file2
+touch file3
+touch file4
+touch file5
+touch file6
+ls
+rm file1
+rm file2
+rm file3
+rm file4
+rm file5
+ls
+
+exit

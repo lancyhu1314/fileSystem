@@ -1,0 +1,22 @@
+mkdir aaa
+ls
+rmdir aaa
+
+mkdir abcdefg
+ls
+rmdir abcdefg
+mkdir abcdefgh
+
+mkdir aaa
+mkdir bbb
+mkdir ccc
+mkdir ddd
+mkdir eee
+ls
+rmdir aaa
+rmdir bbb
+rmdir ccc
+rmdir ddd
+rmdir eee
+ls
+exit
